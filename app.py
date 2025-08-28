@@ -39,4 +39,7 @@ if st.button("Check URL"):
         st.warning("Please enter a URL first!")
 
 
+## run the streamlit using the command
+- streamlit run app.py
+
 
