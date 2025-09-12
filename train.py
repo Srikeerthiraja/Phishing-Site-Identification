@@ -31,6 +31,21 @@ print("Columns:", df.columns.tolist())
 print("Missing values:\n", df.isnull().sum().sort_values(ascending=False).head(10))
 print(df['Result'].value_counts().head())
 
+# ---- Boxplots of top features ----
+if "Result" in df.columns:
+    numeric_cols = df.select_dtypes(include=['int64','float64']).columns.tolist()
+    numeric_cols.remove("Result")
+    for col in numeric_cols[:6]:  # first 6 features
+        plt.figure(figsize=(6,4))
+        sns.boxplot(x="Result", y=col, data=df)
+        plt.title(f"Feature vs Target: {col}")
+        plt.show()
+
+# ---- Histograms ----
+df.hist(bins=30, figsize=(15,12))
+plt.suptitle("Feature Distributions", size=16)
+plt.show()
+
 print("\n-- Descriptive stats (numeric) --")
 print(df.describe().T)
 
