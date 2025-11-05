@@ -1,207 +1,464 @@
+
+import pandas as pd
+import itertools
+from sklearn.metrics import classification_report,confusion_matrix, accuracy_score
+from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import xgboost as xgb
+from lightgbm import LGBMClassifier
+import os
 import seaborn as sns
-import joblib
-import warnings
-warnings.filterwarnings("ignore")
+from wordcloud import WordCloud
 
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score, f1_score, precision_score, recall_score,
-    classification_report, roc_auc_score, confusion_matrix
-)
-df = pd.read_csv("/content/drive/My Drive/Colab Notebooks/csv_Phishing_Dataset.csv")
-print("Initial shape:", df.shape)
-if "id" in df.columns:
-    df = df.drop("id", axis=1)
+df=pd.read_csv('/content/drive/MyDrive/Colab Notebooks/urls_dataset.csv')
 
-# Drop duplicate rows
-dup_count = df.duplicated().sum()
-print("Duplicate rows:", dup_count)
-df = df.drop_duplicates()
+print(df.shape)
+df.head()
 
-# Quick checks
-print("Columns:", df.columns.tolist())
-print("Missing values:\n", df.isnull().sum().sort_values(ascending=False).head(10))
-print(df['Result'].value_counts().head())
+df.type.value_counts()
 
-# ---- Boxplots of top features ----
-if "Result" in df.columns:
-    numeric_cols = df.select_dtypes(include=['int64','float64']).columns.tolist()
-    numeric_cols.remove("Result")
-    for col in numeric_cols[:6]:  # first 6 features
-        plt.figure(figsize=(6,4))
-        sns.boxplot(x="Result", y=col, data=df)
-        plt.title(f"Feature vs Target: {col}")
-        plt.show()
+"""## Feature Engineering"""
 
-# ---- Histograms ----
-df.hist(bins=30, figsize=(15,12))
-plt.suptitle("Feature Distributions", size=16)
-plt.show()
+import re
+#Use of IP or not in domain
+def having_ip_address(url):
+    match = re.search(
+        '(([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.'
+        '([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\/)|'  # IPv4
+        '((0x[0-9a-fA-F]{1,2})\\.(0x[0-9a-fA-F]{1,2})\\.(0x[0-9a-fA-F]{1,2})\\.(0x[0-9a-fA-F]{1,2})\\/)' # IPv4 in hexadecimal
+        '(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}', url)  # Ipv6
+    if match:
+        # print match.group()
+        return 1
+    else:
+        # print 'No matching pattern found'
+        return 0
+df['use_of_ip'] = df['url'].apply(lambda i: having_ip_address(i))
 
-print("\n-- Descriptive stats (numeric) --")
-print(df.describe().T)
+from urllib.parse import urlparse
 
-plt.figure(figsize=(5,4))
-sns.countplot(x="Result", data=df)
-plt.title("Target Class Distribution (Result)")
-plt.show()
-plt.close()
+def abnormal_url(url):
+    hostname = urlparse(url).hostname
+    hostname = str(hostname)
+    match = re.search(hostname, url)
+    if match:
+        # print match.group()
+        return 1
+    else:
+        # print 'No matching pattern found'
+        return 0
 
-plt.figure(figsize=(14,10))
-sns.heatmap(df.corr(), cmap="coolwarm", center=0)
-plt.title("Feature Correlation Heatmap")
-plt.show()
-plt.close()
 
-# The dataset uses -1/1; convert to 0/1 for ML
-df["Result"] = df["Result"].replace({-1: 0, 1: 1})
-y = df["Result"]
-X = df.drop("Result", axis=1)
+df['abnormal_url'] = df['url'].apply(lambda i: abnormal_url(i))
 
-# Keep column order (we'll use this later)
-all_features = X.columns.tolist()
-print("Number of features:", len(all_features))
+#!pip install googlesearch-python
 
-lexical_features = []
-# pick commonly lexical features from your dataset if present
-candidates = [
-    "having_IP_Address", "URL_Length", "Shortining_Service", "having_At_Symbol",
-    "double_slash_redirecting", "Prefix_Suffix", "having_Sub_Domain",
-    "HTTPS_token", "URL_of_Anchor", "Links_in_tags", "SFH", "Submitting_to_email",
-    "Abnormal_URL", "Redirect", "on_mouseover", "RightClick", "popUpWidnow",
-    "Iframe"
-]
-for c in candidates:
-    if c in X.columns:
-        lexical_features.append(c)
+from googlesearch import search
 
-print("Lexical features used for URL-based pipeline:", lexical_features)
-X_train_full, X_test_full, y_train, y_test = train_test_split(
-    X, y, test_size=0.20, random_state=42, stratify=y
-)
+def google_index(url):
+    site = search(url, 5)
+    return 1 if site else 0
+df['google_index'] = df['url'].apply(lambda i: google_index(i))
 
-# Also make lexical train/test if lexical features present
-if lexical_features:
-    X_train_lex = X_train_full[lexical_features].copy()
-    X_test_lex = X_test_full[lexical_features].copy()
-else:
-    X_train_lex = None
-    X_test_lex = None
+def count_dot(url):
+    count_dot = url.count('.')
+    return count_dot
 
-print("Train/test shapes (full):", X_train_full.shape, X_test_full.shape)
-if lexical_features:
-    print("Train/test shapes (lexical):", X_train_lex.shape, X_test_lex.shape)
-def evaluate_and_print(name, model, X_test, y_test):
-    y_pred = model.predict(X_test)
-    y_proba = None
+df['count.'] = df['url'].apply(lambda i: count_dot(i))
+df.head()
+
+def count_www(url):
+    url.count('www')
+    return url.count('www')
+
+df['count-www'] = df['url'].apply(lambda i: count_www(i))
+
+def count_atrate(url):
+
+    return url.count('@')
+
+df['count@'] = df['url'].apply(lambda i: count_atrate(i))
+
+
+def no_of_dir(url):
+    urldir = urlparse(url).path
+    return urldir.count('/')
+
+df['count_dir'] = df['url'].apply(lambda i: no_of_dir(i))
+
+def no_of_embed(url):
+    urldir = urlparse(url).path
+    return urldir.count('//')
+
+df['count_embed_domian'] = df['url'].apply(lambda i: no_of_embed(i))
+
+
+def shortening_service(url):
+    match = re.search('bit\.ly|goo\.gl|shorte\.st|go2l\.ink|x\.co|ow\.ly|t\.co|tinyurl|tr\.im|is\.gd|cli\.gs|'
+                      'yfrog\.com|migre\.me|ff\.im|tiny\.cc|url4\.eu|twit\.ac|su\.pr|twurl\.nl|snipurl\.com|'
+                      'short\.to|BudURL\.com|ping\.fm|post\.ly|Just\.as|bkite\.com|snipr\.com|fic\.kr|loopt\.us|'
+                      'doiop\.com|short\.ie|kl\.am|wp\.me|rubyurl\.com|om\.ly|to\.ly|bit\.do|t\.co|lnkd\.in|'
+                      'db\.tt|qr\.ae|adf\.ly|goo\.gl|bitly\.com|cur\.lv|tinyurl\.com|ow\.ly|bit\.ly|ity\.im|'
+                      'q\.gs|is\.gd|po\.st|bc\.vc|twitthis\.com|u\.to|j\.mp|buzurl\.com|cutt\.us|u\.bb|yourls\.org|'
+                      'x\.co|prettylinkpro\.com|scrnch\.me|filoops\.info|vzturl\.com|qr\.net|1url\.com|tweez\.me|v\.gd|'
+                      'tr\.im|link\.zip\.net',
+                      url)
+    if match:
+        return 1
+    else:
+        return 0
+
+
+df['short_url'] = df['url'].apply(lambda i: shortening_service(i))
+
+def count_https(url):
+    return url.count('https')
+
+df['count-https'] = df['url'].apply(lambda i : count_https(i))
+
+def count_http(url):
+    return url.count('http')
+
+df['count-http'] = df['url'].apply(lambda i : count_http(i))
+
+def count_per(url):
+    return url.count('%')
+
+df['count%'] = df['url'].apply(lambda i : count_per(i))
+
+def count_ques(url):
+    return url.count('?')
+
+df['count?'] = df['url'].apply(lambda i: count_ques(i))
+
+def count_hyphen(url):
+    return url.count('-')
+
+df['count-'] = df['url'].apply(lambda i: count_hyphen(i))
+
+def count_equal(url):
+    return url.count('=')
+
+df['count='] = df['url'].apply(lambda i: count_equal(i))
+
+def url_length(url):
+    return len(str(url))
+
+
+#Length of URL
+df['url_length'] = df['url'].apply(lambda i: url_length(i))
+#Hostname Length
+
+def hostname_length(url):
+    return len(urlparse(url).netloc)
+
+df['hostname_length'] = df['url'].apply(lambda i: hostname_length(i))
+
+df.head()
+
+def suspicious_words(url):
+    match = re.search('PayPal|login|signin|bank|account|update|free|lucky|service|bonus|ebayisapi|webscr',
+                      url)
+    if match:
+        return 1
+    else:
+        return 0
+df['sus_url'] = df['url'].apply(lambda i: suspicious_words(i))
+
+
+def digit_count(url):
+    digits = 0
+    for i in url:
+        if i.isnumeric():
+            digits = digits + 1
+    return digits
+
+
+df['count-digits']= df['url'].apply(lambda i: digit_count(i))
+
+
+def letter_count(url):
+    letters = 0
+    for i in url:
+        if i.isalpha():
+            letters = letters + 1
+    return letters
+
+
+df['count-letters']= df['url'].apply(lambda i: letter_count(i))
+
+df.head()
+
+#!pip install tld
+
+#Importing dependencies
+from urllib.parse import urlparse
+from tld import get_tld
+import os.path
+
+#First Directory Length
+def fd_length(url):
+    urlpath= urlparse(url).path
     try:
-        y_proba = model.predict_proba(X_test)[:,1]
-    except Exception:
-        pass
-    acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred)
-    rec = recall_score(y_test, y_pred)
-    roc = roc_auc_score(y_test, y_proba) if y_proba is not None else None
-    print(f"\n{name} metrics -> Accuracy: {acc:.4f}, F1: {f1:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}, ROC-AUC: {roc if roc else 'n/a'}")
-    print(classification_report(y_test, y_pred))
-    return {"name": name, "accuracy": acc, "f1": f1, "precision": prec, "recall": rec, "roc_auc": roc}
-results = []
+        return len(urlpath.split('/')[1])
+    except:
+        return 0
 
-# Standard scaler + classifier in pipeline
-kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+df['fd_length'] = df['url'].apply(lambda i: fd_length(i))
 
-# 7a) Logistic Regression (full)
-pipe_lr = Pipeline([
-    ("scaler", StandardScaler()),
-    ("clf", LogisticRegression(max_iter=1000, random_state=42))
-])
-pipe_lr.fit(X_train_full, y_train)
-results.append(evaluate_and_print("LogisticRegression (full)", pipe_lr, X_test_full, y_test))
-# 7b) SVM (full) -- enable probability for ROC
-pipe_svc = Pipeline([
-    ("scaler", StandardScaler()),
-    ("clf", SVC(probability=True, random_state=42))
-])
-pipe_svc.fit(X_train_full, y_train)
-results.append(evaluate_and_print("SVC (full)", pipe_svc, X_test_full, y_test))
-# 7c) Random Forest (full)
-pipe_rf = Pipeline([
-    ("scaler", StandardScaler()),   # RF doesn't need scaling, but keep pipeline consistent
-    ("clf", RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1))
-])
-pipe_rf.fit(X_train_full, y_train)
-results.append(evaluate_and_print("RandomForest (full)", pipe_rf, X_test_full, y_test))
-if lexical_features:
-    # Logistic on lexical
-    pipe_lr_lex = Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression(max_iter=1000, random_state=42))])
-    pipe_lr_lex.fit(X_train_lex, y_train)
-    results.append(evaluate_and_print("LogisticRegression (lexical)", pipe_lr_lex, X_test_lex, y_test))
-
-    # SVC on lexical
-    pipe_svc_lex = Pipeline([("scaler", StandardScaler()), ("clf", SVC(probability=True, random_state=42))])
-    pipe_svc_lex.fit(X_train_lex, y_train)
-    results.append(evaluate_and_print("SVC (lexical)", pipe_svc_lex, X_test_lex, y_test))
-
-    # RandomForest on lexical
-    pipe_rf_lex = Pipeline([("scaler", StandardScaler()), ("clf", RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1))])
-    pipe_rf_lex.fit(X_train_lex, y_train)
-    results.append(evaluate_and_print("RandomForest (lexical)", pipe_rf_lex, X_test_lex, y_test))
-full_results = [r for r in results if "(full)" in r['name']]
-best_full = max(full_results, key=lambda x: x['f1'])
-print("\nBest full-feature model:", best_full)
-
-# choose best lexical model if available
-lex_results = [r for r in results if "(lexical)" in r['name']]
-best_lex = max(lex_results, key=lambda x: x['f1']) if lex_results else None
-print("Best lexical model:", best_lex)
-# Map names to actual objects to save pipelines properly
-pipeline_map = {
-    "LogisticRegression (full)": pipe_lr,
-    "SVC (full)": pipe_svc,
-    "RandomForest (full)": pipe_rf
-}
-if lexical_features:
-    pipeline_map.update({
-        "LogisticRegression (lexical)": pipe_lr_lex,
-        "SVC (lexical)": pipe_svc_lex,
-        "RandomForest (lexical)": pipe_rf_lex
-    })
-best_full_pipeline_name = best_full['name']
-best_full_pipeline = pipeline_map[best_full_pipeline_name]
-joblib.dump(best_full_pipeline, "best_full_pipeline.pkl")
-print("Saved best full pipeline as best_full_pipeline.pkl ->", best_full_pipeline_name)
-# Save the best lexical pipeline (for runtime URL -> lexical features)
-if best_lex:
-    best_lex_pipeline_name = best_lex['name']
-    best_lex_pipeline = pipeline_map[best_lex_pipeline_name]
-    joblib.dump(best_lex_pipeline, "best_lexical_pipeline.pkl")
-    print("Saved best lexical pipeline as best_lexical_pipeline.pkl ->", best_lex_pipeline_name)
-# Also save the list of features used in lexical pipeline to disk for the Streamlit app
-if lexical_features:
-    joblib.dump(lexical_features, "lexical_features_list.pkl")
-    print("Saved lexical feature list as lexical_features_list.pkl")
+#Length of Top Level Domain
+df['tld'] = df['url'].apply(lambda i: get_tld(i,fail_silently=True))
 
 
-# Save a CSV of top feature importances using the full RandomForest if available
-try:
-    # If full RF exists, get feature importance
-    if isinstance(pipe_rf.named_steps['clf'], RandomForestClassifier):
-        rf = pipe_rf.named_steps['clf']
-        importances = rf.feature_importances_
-        feat_imp = pd.Series(importances, index=X_train_full.columns).sort_values(ascending=False)
-        feat_imp.head(25).to_csv("top25_feature_importances.csv")
-        print("Saved top25_feature_importances.csv")
-except Exception:
-    pass
+def tld_length(tld):
+    try:
+        return len(tld)
+    except:
+        return -1
 
-print("\nTraining & saving complete.")
+df['tld_length'] = df['tld'].apply(lambda i: tld_length(i))
+
+df = df.drop("tld", axis=1)
+
+df.columns
+
+df['type'].value_counts()
+
+"""## EDA
+
+## 1. Distribution of use_of_ip
+"""
+
+import seaborn as sns
+sns.set(style="darkgrid")
+ax = sns.countplot(y="type", data=df,hue="use_of_ip")
+
+"""## 2. Distribution of abnormal url"""
+
+sns.set(style="darkgrid")
+ax = sns.countplot(y="type", data=df,hue="abnormal_url")
+
+"""## 3. Distribution of Google Index"""
+
+sns.set(style="darkgrid")
+ax = sns.countplot(y="type", data=df,hue="google_index")
+
+"""## 4. Distribution of Shorl URL"""
+
+sns.set(style="darkgrid")
+ax = sns.countplot(y="type", data=df,hue="short_url")
+
+"""## 5. Distribution of Suspicious URL"""
+
+sns.set(style="darkgrid")
+ax = sns.countplot(y="type", data=df,hue="sus_url")
+
+"""## 6. Distribution of count of [.] dot"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="count.", kind="box", data=df)
+
+"""## 7. Distribution of count-www"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="count-www", kind="box", data=df)
+
+"""## 8. Distribution of count@"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="count@", kind="box", data=df)
+
+"""## 9. Distribution of count_dir"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="count_dir", kind="box", data=df)
+
+"""## 10. Distribution of hostname length"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="hostname_length", kind="box", data=df)
+
+"""## 11. Distribution of first directory length"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="fd_length", kind="box", data=df)
+
+"""## 12. Distribution of top-level domain length"""
+
+sns.set(style="darkgrid")
+ax = sns.catplot(x="type", y="tld_length", kind="box", data=df)
+
+"""## Target Encoding"""
+
+from sklearn.preprocessing import LabelEncoder
+
+lb_make = LabelEncoder()
+df["type_code"] = lb_make.fit_transform(df["type"])
+df["type_code"].value_counts()
+
+"""## Creation of Feature & Target"""
+
+#Predictor Variables
+# filtering out google_index as it has only 1 value
+X = df[['use_of_ip','abnormal_url', 'count.', 'count-www', 'count@',
+       'count_dir', 'count_embed_domian', 'short_url', 'count-https',
+       'count-http', 'count%', 'count?', 'count-', 'count=', 'url_length',
+       'hostname_length', 'sus_url', 'fd_length', 'tld_length', 'count-digits',
+       'count-letters']]
+
+#Target Variable
+y = df['type_code']
+
+X.head()
+
+X.columns
+
+"""## Train Test Split"""
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2,shuffle=True, random_state=5)
+
+"""# Model Building
+
+## 1. Random Forest Classifier
+"""
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+rf = RandomForestClassifier(n_estimators=100,max_features='sqrt')
+rf.fit(X_train,y_train)
+y_pred_rf = rf.predict(X_test)
+print(classification_report(y_test,y_pred_rf,target_names=['benign', 'defacement','phishing','malware']))
+
+score = accuracy_score(y_test, y_pred_rf)
+print("accuracy:   %0.3f" % score)
+
+cm = confusion_matrix(y_test, y_pred_rf)
+cm_df = pd.DataFrame(cm,
+                     index = ['benign', 'defacement','phishing','malware'],
+                     columns = ['benign', 'defacement','phishing','malware'])
+plt.figure(figsize=(8,6))
+sns.heatmap(cm_df, annot=True,fmt=".1f")
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+feat_importances = pd.Series(rf.feature_importances_, index=X_train.columns)
+feat_importances.sort_values().plot(kind="barh",figsize=(10, 6))
+
+"""## 2. Light GBM Classifier"""
+
+from sklearn.metrics import accuracy_score
+lgb = LGBMClassifier(objective='multiclass',boosting_type= 'gbdt',n_jobs = 5,
+          silent = True, random_state=5)
+LGB_C = lgb.fit(X_train, y_train)
+
+
+y_pred_lgb = LGB_C.predict(X_test)
+print(classification_report(y_test,y_pred_lgb,target_names=['benign', 'defacement','phishing','malware']))
+
+score = accuracy_score(y_test, y_pred_lgb)
+print("accuracy:   %0.3f" % score)
+
+cm = confusion_matrix(y_test, y_pred_lgb)
+cm_df = pd.DataFrame(cm,
+                     index = ['benign', 'defacement','phishing','malware'],
+                     columns = ['benign', 'defacement','phishing','malware'])
+plt.figure(figsize=(8,6))
+sns.heatmap(cm_df, annot=True,fmt=".1f")
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+feat_importances = pd.Series(lgb.feature_importances_, index=X_train.columns)
+feat_importances.sort_values().plot(kind="barh",figsize=(10, 6))
+
+"""## 3. XGboost Classifier"""
+
+xgb_c = xgb.XGBClassifier(n_estimators= 100)
+xgb_c.fit(X_train,y_train)
+y_pred_x = xgb_c.predict(X_test)
+print(classification_report(y_test,y_pred_x,target_names=['benign', 'defacement','phishing','malware']))
+
+from sklearn import metrics
+score = metrics.accuracy_score(y_test, y_pred_x)
+print("accuracy:   %0.3f" % score)
+
+cm = confusion_matrix(y_test, y_pred_x)
+cm_df = pd.DataFrame(cm,
+                     index = ['benign', 'defacement','phishing','malware'],
+                     columns = ['benign', 'defacement','phishing','malware'])
+plt.figure(figsize=(8,6))
+sns.heatmap(cm_df, annot=True,fmt=".1f")
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+feat_importances = pd.Series(xgb_c.feature_importances_, index=X_train.columns)
+feat_importances.sort_values().plot(kind="barh",figsize=(10, 6))
+
+"""## Prediction"""
+
+def main(url):
+
+    status = []
+
+    status.append(having_ip_address(url))
+    status.append(abnormal_url(url))
+    status.append(count_dot(url))
+    status.append(count_www(url))
+    status.append(count_atrate(url))
+    status.append(no_of_dir(url))
+    status.append(no_of_embed(url))
+
+    status.append(shortening_service(url))
+    status.append(count_https(url))
+    status.append(count_http(url))
+
+    status.append(count_per(url))
+    status.append(count_ques(url))
+    status.append(count_hyphen(url))
+    status.append(count_equal(url))
+
+    status.append(url_length(url))
+    status.append(hostname_length(url))
+    status.append(suspicious_words(url))
+    status.append(digit_count(url))
+    status.append(letter_count(url))
+    status.append(fd_length(url))
+    tld = get_tld(url,fail_silently=True)
+
+    status.append(tld_length(tld))
+    return status
+
+def get_prediction_from_url(test_url):
+    features_test = main(test_url)
+    # Due to updates to scikit-learn, we now need a 2D array as a parameter to the predict function.
+    features_test = np.array(features_test).reshape((1, -1))
+    
+    pred = lgb.predict(features_test)
+    if int(pred[0]) == 0:
+
+        res="SAFE"
+        return res
+    elif int(pred[0]) == 1.0:
+
+        res="DEFACEMENT"
+        return res
+    elif int(pred[0]) == 2.0:
+        res="PHISHING"
+        return res
+
+    elif int(pred[0]) == 3.0:
+
+        res="MALWARE"
+        return res
+
+import joblib
+joblib.dump(lgb, "lgb_model.pkl")
+print("✅ Model saved as lgb_model.pkl")
 
