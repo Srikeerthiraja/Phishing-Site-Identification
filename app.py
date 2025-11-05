@@ -134,8 +134,6 @@ def run_app():
             st.markdown("---")
             st.info(" Tip: Always double-check URLs that request your login details or financial information!")
 
-    st.markdown("<br><hr><center>Made with ❤️ using Streamlit & LightGBM</center>", unsafe_allow_html=True)
-
 
 if __name__ == "__main__":
     run_app()
