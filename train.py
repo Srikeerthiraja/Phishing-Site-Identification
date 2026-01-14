@@ -460,5 +460,5 @@ def get_prediction_from_url(test_url):
 
 import joblib
 joblib.dump(lgb, "lgb_model.pkl")
-print("✅ Model saved as lgb_model.pkl")
+print(" Model saved as lgb_model.pkl")
 
